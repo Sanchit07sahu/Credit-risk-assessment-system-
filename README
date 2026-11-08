@@ -1,0 +1,163 @@
+# Explainable Credit Risk Assessment
+
+A machine learning project that predicts whether a loan applicant is likely to **default**, and explains *why* each prediction was made. It compares an interpretable baseline (Logistic Regression) against a tuned **XGBoost** model, calibrates the predicted probabilities, and uses **SHAP** to explain the model globally and for individual applicants.
+
+## Highlights
+
+- End-to-end workflow: EDA → data validation → preprocessing pipelines → modelling → evaluation → explainability → model export
+- Handles **class imbalance** (about 22% defaults) with class weights / `scale_pos_weight`
+- Leak-safe preprocessing using scikit-learn `Pipeline` + `ColumnTransformer`
+- **Stratified 5-fold cross-validation** and `RandomizedSearchCV` (150 iterations) for XGBoost tuning
+- **Probability calibration** (sigmoid / Platt scaling) so a "30% risk" score means what it says
+- **SHAP** summary and waterfall plots for global and per-applicant explanations
+- Error analysis of false positives and false negatives
+
+## Dataset
+
+The project uses the public **Credit Risk Dataset** (32,581 loan records, 12 columns), available on Kaggle:
+<https://www.kaggle.com/datasets/laotse/credit-risk-dataset>
+
+Download `credit_risk_dataset.csv` and place it in the `data/` folder (see [Project Structure](#project-structure)).
+
+| Column | Description |
+|---|---|
+| `person_age` | Applicant age |
+| `person_income` | Annual income |
+| `person_home_ownership` | RENT / OWN / MORTGAGE / OTHER |
+| `person_emp_length` | Employment length (years) |
+| `loan_intent` | Purpose of the loan (education, medical, personal, etc.) |
+| `loan_grade` | Loan grade (A–G) |
+| `loan_amnt` | Loan amount |
+| `loan_int_rate` | Interest rate |
+| `loan_status` | **Target**: 1 = defaulted, 0 = repaid |
+| `loan_percent_income` | Loan amount as a share of income |
+| `cb_person_default_on_file` | Previous default on file (Y/N) |
+| `cb_person_cred_hist_length` | Credit history length (years) |
+
+**Known data issues handled in the notebook:** missing values in `person_emp_length` (895) and `loan_int_rate` (3,116); duplicate rows (165); impossible values such as age above 100 (max 144) and employment length of 123 years.
+
+## Methodology
+
+1. **Load & explore:** shape, types, missing values, target balance, outliers, correlations
+2. **Validate & clean:** drop duplicates, remove ages outside 18–100, remove employment length above 60 or greater than age, remove non-positive loan amounts
+3. **Split:** 80/20 stratified train/test split (`random_state=42`)
+4. **Preprocess:** median imputation for numeric columns (plus scaling for Logistic Regression), constant imputation + one-hot encoding for categorical columns
+5. **Cross-validate:** stratified 5-fold CV on both models
+6. **Baseline:** Logistic Regression with balanced class weights
+7. **Tune:** XGBoost with `RandomizedSearchCV`, optimising average precision
+8. **Compare:** accuracy, precision, recall, F1, confusion matrix, precision-recall curve
+9. **Threshold tuning:** choose a decision cut-off from the precision-recall curve
+10. **Calibrate:** `CalibratedClassifierCV` (sigmoid) and compare calibration curves
+11. **Explain:** SHAP `TreeExplainer`, summary plot and waterfall plot
+12. **Error analysis:** false positives vs false negatives
+13. **Export:** save the model with `joblib`
+
+## Results
+
+**5-fold cross-validation (training data)**
+
+| Model | ROC-AUC | Accuracy | Precision | Recall | F1 |
+|---|---|---|---|---|---|
+| Logistic Regression | 0.871 | 0.812 | 0.545 | 0.778 | 0.641 |
+| XGBoost | 0.939 | 0.909 | 0.791 | 0.786 | 0.788 |
+
+**Hold-out test set (6,305 rows)**
+
+| Model | Accuracy | Precision | Recall | F1 |
+|---|---|---|---|---|
+| Logistic Regression (baseline) | 0.82 | 0.56 | 0.79 | 0.65 |
+| XGBoost (tuned) | 0.92 | 0.81 | 0.81 | 0.81 |
+
+The tuned XGBoost model produced 258 false positives and 256 false negatives on the test set.
+
+## Project Structure
+
+```
+credit-risk-assessment/
+├── README.md
+├── requirements.txt
+├── .gitignore
+├── Credit_Risk.ipynb          # Main notebook
+├── data/
+│   ├── README.md              # Where to download the dataset
+│   └── credit_risk_dataset.csv  # (optional, see note below)
+├── models/                    # Saved model files (not tracked, see .gitignore)
+└── images/                    # Exported plots used in this README (optional)
+```
+
+## Getting Started
+
+```bash
+# 1. Clone the repository
+git clone https://github.com/<your-username>/credit-risk-assessment.git
+cd credit-risk-assessment
+
+# 2. Create an environment and install dependencies
+python -m venv venv
+source venv/bin/activate        # Windows: venv\Scripts\activate
+pip install -r requirements.txt
+
+# 3. Download the dataset into data/ (see the Dataset section)
+
+# 4. Launch the notebook
+jupyter notebook Credit_Risk.ipynb
+```
+
+> **Note:** the notebook reads `credit_risk_dataset.csv` from the working directory. Either move the file next to the notebook or change the path to `data/credit_risk_dataset.csv`.
+
+### requirements.txt
+
+```
+numpy
+pandas
+matplotlib
+seaborn
+scikit-learn
+scipy
+xgboost
+shap
+joblib
+jupyter
+```
+
+## Using the Saved Model
+
+```python
+import joblib
+import pandas as pd
+
+model = joblib.load("models/credit_risk_model.pkl")
+
+applicant = pd.DataFrame([{
+    "person_age": 28,
+    "person_income": 55000,
+    "person_home_ownership": "RENT",
+    "person_emp_length": 4.0,
+    "loan_intent": "PERSONAL",
+    "loan_grade": "C",
+    "loan_amnt": 10000,
+    "loan_int_rate": 12.5,
+    "loan_percent_income": 0.18,
+    "cb_person_default_on_file": "N",
+    "cb_person_cred_hist_length": 5,
+}])
+
+default_probability = model.predict_proba(applicant)[:, 1][0]
+print(f"Probability of default: {default_probability:.1%}")
+```
+
+Pickled models depend on library versions, so load them with the same versions of scikit-learn and XGBoost used for training.
+
+## Limitations
+
+- The dataset is a static public sample, not live lending data; results should not be used for real credit decisions.
+- Credit models can encode bias. Features such as age should be reviewed for fairness and regulatory compliance before any real-world use.
+- Probabilities are only as reliable as the calibration data; re-check calibration if the applicant population changes.
+
+## Tech Stack
+
+Python · pandas · NumPy · scikit-learn · XGBoost · SHAP · Matplotlib · Seaborn · Jupyter
+
+## License
+
+Released under the MIT License (add a `LICENSE` file). The dataset belongs to its original publisher; please check its license on Kaggle.
